@@ -99,6 +99,7 @@ def heatmap_from_pivot(pv: pd.DataFrame, title: str, ztitle: str):
     fig.update_layout(title=title, margin=dict(l=0, r=0, t=60, b=0))
     return fig
 
+# ----------------------- Load & validate -----------------------
 if not DATA_FILE.exists():
     st.error("Dataset file not found. Put 'Combined_Sales_2025 (2).csv' in the SAME folder as app.py in your repo.")
     st.stop()
@@ -109,6 +110,7 @@ if missing:
     st.error("Missing required columns: " + ", ".join(missing))
     st.stop()
 
+# ----------------------- Clean -----------------------
 text_cols = ["Country", "City", "Channel", "Customer Type", "Product Type", "Lead Source", "Consignment? (Y/N)"]
 for c in text_cols:
     if c in df.columns:
@@ -126,13 +128,18 @@ for c in num_cols:
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
 df["Net Sales (CAD)"] = (df["Price (CAD)"] - df["Discount (CAD)"]).clip(lower=0)
-df["Total Collected (CAD)"] = (df["Net Sales (CAD)"] + df["Shipping (CAD)"].fillna(0) + df["Taxes Collected (CAD)"].fillna(0)).clip(lower=0)
+df["Total Collected (CAD)"] = (
+    df["Net Sales (CAD)"]
+    + df["Shipping (CAD)"].fillna(0)
+    + df["Taxes Collected (CAD)"].fillna(0)
+).clip(lower=0)
 df["Discount Rate"] = np.where(df["Price (CAD)"] > 0, df["Discount (CAD)"] / df["Price (CAD)"], np.nan)
 
 df["Ship Lag Raw (days)"] = (df["Shipped Date"] - df["Date"]).dt.days
 df["Ship Lag Clean (days)"] = np.where(df["Ship Lag Raw (days)"] >= 0, df["Ship Lag Raw (days)"], np.nan)
 df["Month"] = df["Date"].dt.to_period("M").dt.to_timestamp()
 
+# ----------------------- Sidebar filters -----------------------
 st.sidebar.header("Filters")
 min_d = df["Date"].min()
 max_d = df["Date"].max()
@@ -143,6 +150,7 @@ if pd.isna(min_d) or pd.isna(max_d):
 dr = st.sidebar.date_input("Date range", value=(min_d.date(), max_d.date()))
 if not isinstance(dr, tuple):
     dr = (dr, dr)
+
 start = pd.to_datetime(dr[0])
 end = pd.to_datetime(dr[1]) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
 
@@ -174,6 +182,7 @@ if f.empty:
 
 lag_col = "Ship Lag Clean (days)" if exclude_negative_lag else "Ship Lag Raw (days)"
 
+# ----------------------- KPI row -----------------------
 total = float(f[metric].sum())
 orders = int(len(f))
 aov = float(f[metric].mean())
@@ -202,34 +211,53 @@ k9.metric("Neg Ship Lag Rows", f"{neg_lag_rows:,}")
 
 tabs = st.tabs(["Overview", "World Map", "Geography × Channels", "Shipping Lag (Country + City)", "Time", "Stats", "Data"])
 
+# ----------------------- Overview -----------------------
 with tabs[0]:
     st.subheader("Insights")
     share_top = float(country_totals.iloc[0] / country_totals.sum()) if country_totals.sum() else np.nan
+
     bullets = []
     if np.isfinite(share_top):
-        bullets.append(f"- Concentration: **{top_country}** contributes ~**{share_top*100:.1f}%** of {metric}.")
-    bullets.append(f"- Top channel by {metric}: **{top_channel}**.")
+        bullets.append(f"- Concentration: **{top_country}** contributes ~**{share_top*100:.1f}%** of **{metric}**.")
+    bullets.append(f"- Top channel by **{metric}**: **{top_channel}**.")
     if np.isfinite(cons_rate):
-        bullets.append(f"- Consignment share: **{cons_rate:.1f}%** of orders.")
+        bullets.append(f"- Consignment: **{cons_rate:.1f}%** of orders.")
+    if np.isfinite(avg_lag):
+        bullets.append(f"- Avg ship lag: **{avg_lag:.1f} days** (based on current filters).")
     if neg_lag_rows > 0:
         bullets.append(f"- Data note: **{neg_lag_rows}** rows have negative ship lag (excluded from lag charts if toggle is ON).")
     st.markdown("\n".join(bullets) if bullets else "-")
 
-    st.subheader("Recommendations")
+    st.subheader("Recommendations (actionable)")
     recs = []
+
+    # Market focus
+    next_tier = country_totals.iloc[1:4].index.tolist() if len(country_totals) >= 2 else []
     if np.isfinite(share_top) and share_top >= 0.5:
-        recs += [
-            "- Protect the anchor country with inventory + fulfillment reliability + channel execution.",
-            "- Scale 2–3 next-tier countries using the channels that already win there (see heatmap).",
-        ]
+        recs.append(f"- Protect the anchor market (**{top_country}**) with fulfillment reliability and channel execution in **{top_channel}**.")
+        if next_tier:
+            recs.append(f"- Scale the next-tier markets (**{', '.join(next_tier)}**) by copying the winning channel patterns from the heatmap.")
     else:
-        recs += ["- Use market tiers (anchor/growth/test) and align channel strategy per tier."]
+        if len(country_totals) >= 3:
+            recs.append("- Revenue is spread across markets: use a 3-tier plan (Anchor / Growth / Test) and tailor channel strategy per tier.")
+        else:
+            recs.append("- Add more market diversity: test 1–2 new countries with the simplest, lowest-friction channel first (usually Online).")
+
+    # Shipping ops
+    if np.isfinite(avg_lag) and avg_lag >= 7:
+        recs.append("- Ship lag is high: use the Country+City hotspot table to pick the worst delay clusters and fix carrier/routes first.")
+    elif np.isfinite(avg_lag):
+        recs.append("- Ship lag looks manageable: keep monitoring hotspots; prevent delays from concentrating in a few cities.")
+
+    # Data hygiene
     if neg_lag_rows > 0:
-        recs += ["- Fix negative ship lag (date entry / shipping record) so operational KPIs are reliable."]
+        recs.append("- Clean negative ship lag rows (order date vs shipped date entry) so the operational KPI is trustworthy.")
+
     st.markdown("\n".join(recs) if recs else "-")
 
+# ----------------------- World Map -----------------------
 with tabs[1]:
-    st.subheader(f"World map — {metric} ($ CAD)")
+    st.subheader(f"World map - {metric} ($ CAD)")
     agg = country_totals.reset_index().rename(columns={metric: "value"})
     agg["share"] = agg["value"] / agg["value"].sum()
 
@@ -241,7 +269,7 @@ with tabs[1]:
         hover_name="Country",
         custom_data=["share"],
         projection="natural earth",
-        title=f"World Map — {metric} ($ CAD)"
+        title=f"World Map - {metric} ($ CAD)"
     )
     fig.update_traces(
         hovertemplate="<b>%{location}</b><br>"
@@ -254,9 +282,12 @@ with tabs[1]:
 
     st.subheader("Top markets")
     top_tbl = agg.sort_values("value", ascending=False).head(15).copy()
+    top_tbl["Total ($ CAD)"] = top_tbl["value"].round(0)
+    top_tbl["Share (%)"] = (top_tbl["share"] * 100).round(1)
     top_tbl = rank_df(top_tbl)
-    st.dataframe(top_tbl.set_index("#")[["Country", "value", "share"]], use_container_width=True)
+    st.dataframe(top_tbl.set_index("#")[["Country", "Total ($ CAD)", "Share (%)"]], use_container_width=True)
 
+# ----------------------- Geography × Channels -----------------------
 with tabs[2]:
     colA, colB = st.columns(2)
 
@@ -295,6 +326,7 @@ with tabs[2]:
     st.plotly_chart(fig4, use_container_width=True)
     download_html(fig4, "05_channel_mix_share.html", "Download HTML — Channel Mix")
 
+# ----------------------- Shipping Lag -----------------------
 with tabs[3]:
     st.subheader("Shipping lag tied to both Country + City")
 
@@ -314,14 +346,18 @@ with tabs[3]:
             st.plotly_chart(fig1, use_container_width=True)
             download_html(fig1, "06_ship_lag_by_country.html", "Download HTML — Lag by Country")
 
-            pick = st.selectbox("Pick a country (city drilldown)", sorted(lag_df["Country"].unique().tolist()))
-            by_city = (lag_df[lag_df["Country"] == pick]
-                       .groupby("City")["Ship Lag (days)"].mean()
-                       .sort_values(ascending=False).head(15).reset_index())
-            fig2 = px.bar(by_city, x="City", y="Ship Lag (days)", title=f"Avg Ship Lag by City in {pick} (Top 15)")
-            fig2.update_layout(xaxis={"categoryorder": "total descending"})
-            st.plotly_chart(fig2, use_container_width=True)
-            download_html(fig2, "07_ship_lag_by_city.html", "Download HTML — Lag by City")
+            countries_lag = sorted([c for c in lag_df["Country"].dropna().unique().tolist() if c])
+            if countries_lag:
+                pick = st.selectbox("Pick a country (city drilldown)", countries_lag)
+                by_city = (lag_df[lag_df["Country"] == pick]
+                           .groupby("City")["Ship Lag (days)"].mean()
+                           .sort_values(ascending=False).head(15).reset_index())
+                fig2 = px.bar(by_city, x="City", y="Ship Lag (days)", title=f"Avg Ship Lag by City in {pick} (Top 15)")
+                fig2.update_layout(xaxis={"categoryorder": "total descending"})
+                st.plotly_chart(fig2, use_container_width=True)
+                download_html(fig2, "07_ship_lag_by_city.html", "Download HTML — Lag by City")
+            else:
+                st.info("No countries available for city drilldown after filters.")
 
         with col2:
             min_orders = st.slider("Minimum orders per Country+City", 2, 15, 5)
@@ -332,13 +368,18 @@ with tabs[3]:
                 med_lag=("Ship Lag (days)", "median"),
                 total_metric=(metric, "sum")
             ).reset_index())
+
             cc = cc[cc["orders"] >= min_orders].copy()
             cc = cc.sort_values(["avg_lag", "orders"], ascending=[False, False]).head(25)
             cc["total_metric"] = cc["total_metric"].round(0)
             cc["avg_lag"] = cc["avg_lag"].round(1)
             cc["med_lag"] = cc["med_lag"].round(1)
             cc = rank_df(cc).rename(columns={"total_metric": f"Total ({metric})"})
-            st.dataframe(cc.set_index("#")[["Country", "City", "orders", "avg_lag", "med_lag", f"Total ({metric})"]], use_container_width=True)
+
+            st.dataframe(
+                cc.set_index("#")[["Country", "City", "orders", "avg_lag", "med_lag", f"Total ({metric})"]],
+                use_container_width=True
+            )
 
             top_countries = (lag_df.groupby("Country")[metric].sum().sort_values(ascending=False).head(12).index)
             sub = lag_df[lag_df["Country"].isin(top_countries)].copy()
@@ -353,55 +394,71 @@ with tabs[3]:
             samp = lag_df.copy()
             if len(samp) > 2500:
                 samp = samp.sample(2500, random_state=7)
-            fig4 = px.scatter(samp, x="Ship Lag (days)", y=metric, color="Channel",
-                              title=f"Ship Lag vs {metric} ($ CAD)", hover_data=["Country", "City"])
+
+            fig4 = px.scatter(
+                samp, x="Ship Lag (days)", y=metric, color="Channel",
+                title=f"Ship Lag vs {metric} ($ CAD)", hover_data=["Country", "City"]
+            )
             fig4.update_traces(hovertemplate="Lag: %{x:.0f} days<br>Value: %{y:$,.0f} CAD<extra></extra>")
             st.plotly_chart(fig4, use_container_width=True)
             download_html(fig4, "09_ship_lag_scatter.html", "Download HTML — Lag Scatter")
 
         st.subheader("Shipping recommendations")
         st.markdown(
-            "- Use the **Country+City hotspot table** to identify the biggest delay areas.\n"
-            "- If a **few cities** are slow inside a country: fix routes/carriers for those city clusters.\n"
-            "- If a **whole country** is slow: treat it as a different fulfillment region or SLA."
+            "- Use the **Country+City hotspot table** to target the worst delay clusters first.\n"
+            "- If only a few cities are slow inside a country: fix **routes/carriers** for those city clusters.\n"
+            "- If the whole country is slow: treat it as a different **fulfillment region/SLA**."
         )
 
+# ----------------------- Time -----------------------
 with tabs[4]:
-    st.subheader(f"Time trend — {metric} ($ CAD)")
+    st.subheader(f"Time trend - {metric} ($ CAD)")
     ts_df = f.groupby("Month")[metric].sum().reset_index().rename(columns={metric: "value"})
     fig = px.line(ts_df, x="Month", y="value", title=f"Monthly {metric} ($ CAD)")
     fig.update_traces(hovertemplate="Month: %{x|%Y-%m}<br>Value: %{y:$,.0f} CAD<extra></extra>")
     st.plotly_chart(fig, use_container_width=True)
     download_html(fig, "10_monthly_trend.html", "Download HTML — Monthly Trend")
 
+# ----------------------- Stats (simple) -----------------------
 with tabs[5]:
-    st.subheader("Stats")
+    st.subheader("Stats (kept simple)")
 
-    st.markdown("### 1) Do channels differ on order value?")
-    grp = f.groupby("Channel")[metric].apply(lambda x: x.dropna().values)
-    if len(grp) >= 2:
-        _, p = stats.kruskal(*grp.tolist())
-        st.write(f"p-value: **{p_fmt(p)}** → " + ("Different typical values across channels" if p < 0.05 else "No strong evidence of difference"))
+    st.markdown("### 1) Do channels have different typical order values?")
+    groups = []
+    labels = []
+    for ch_name, g in f.groupby("Channel"):
+        vals = g[metric].dropna().values
+        if len(vals) >= 5:
+            groups.append(vals)
+            labels.append(ch_name)
+
+    if len(groups) >= 2:
+        _, p = stats.kruskal(*groups)
+        msg = "Channels probably have **different typical order values**." if p < 0.05 else "No clear evidence that channels differ on typical order value."
+        st.write(f"{msg}  (p-value: **{p_fmt(p)}**)")
     else:
-        st.write("-")
+        st.write("Not enough channel data after filters to compare.")
 
-    st.markdown("### 2) Is channel mix different by country?")
+    st.markdown("### 2) Do countries use different channel mixes?")
     top_for_test = country_totals.head(min(10, len(country_totals))).index
     tmp = f.copy()
     tmp["Country (top)"] = np.where(tmp["Country"].isin(top_for_test), tmp["Country"], "Other")
     ct = pd.crosstab(tmp["Country (top)"], tmp["Channel"])
+
     if ct.shape[0] >= 2 and ct.shape[1] >= 2:
         _, p2, _, _ = stats.chi2_contingency(ct)
-        st.write(f"p-value: **{p_fmt(p2)}** → " + ("Different mixes by country" if p2 < 0.05 else "No strong evidence of different mixes"))
+        msg2 = "Countries use **different channel mixes**." if p2 < 0.05 else "No clear evidence that channel mix differs by country."
+        st.write(f"{msg2}  (p-value: **{p_fmt(p2)}**)")
     else:
-        st.write("-")
+        st.write("Not enough country/channel coverage after filters to compare mixes.")
 
-    st.markdown("### 3) Strongest numeric relationships (Spearman)")
+    st.markdown("### 3) Biggest numeric relationships (Spearman)")
     driver_candidates = [
         "Discount (CAD)", "Shipping (CAD)", "Taxes Collected (CAD)",
         "Color Count (#)", "length", "width", "weight", lag_col
     ]
     drivers = [c for c in driver_candidates if c in f.columns]
+
     rows = []
     for c in drivers:
         x = f[c]
@@ -410,6 +467,7 @@ with tabs[5]:
         if ok.sum() >= 30:
             r, pv = stats.spearmanr(x[ok], y[ok])
             rows.append((c, float(r), float(pv), int(ok.sum())))
+
     if rows:
         out = pd.DataFrame(rows, columns=["variable", "spearman_r", "p_value", "n"])
         out["abs_r"] = out["spearman_r"].abs()
@@ -419,8 +477,9 @@ with tabs[5]:
         out = rank_df(out)
         st.dataframe(out.set_index("#"), use_container_width=True)
     else:
-        st.write("-")
+        st.write("Not enough numeric data to compute reliable correlations.")
 
+# ----------------------- Data tab -----------------------
 with tabs[6]:
     st.subheader("Clean tables + download")
 
@@ -433,7 +492,9 @@ with tabs[6]:
         st.dataframe(rank_df(t).set_index("#"), use_container_width=True)
 
         st.markdown("### Top Cities (Country + City)")
-        cct = f.groupby(["Country", "City"])[metric].sum().sort_values(ascending=False).head(25).reset_index().rename(columns={metric: "Total ($ CAD)"})
+        cct = (f.groupby(["Country", "City"])[metric]
+               .sum().sort_values(ascending=False).head(25).reset_index()
+               .rename(columns={metric: "Total ($ CAD)"}))
         cct["Total ($ CAD)"] = cct["Total ($ CAD)"].round(0)
         st.dataframe(rank_df(cct).set_index("#"), use_container_width=True)
 
