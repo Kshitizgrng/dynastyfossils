@@ -7,9 +7,9 @@ import plotly.graph_objects as go
 import plotly.io as pio
 from scipy import stats
 
-st.set_page_config(page_title="Week 10 • Geography & Channels", layout="wide")
-st.title("Week 10 — Geography & Channels Deep Dive")
-st.caption("World map • Geography × Channels • Shipping lag by Country + City • Stats • $ CAD")
+st.set_page_config(page_title="Geography & Channels", layout="wide")
+st.title("Geography & Channels")
+st.caption("World map • Geography × Channels • Shipping lag • Stats • $ CAD")
 
 BASE = pathlib.Path(__file__).parent
 DATA_FILE = BASE / "Combined_Sales_2025 (2).csv"
