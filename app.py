@@ -8,20 +8,6 @@ import plotly.io as pio
 from scipy import stats
 
 st.set_page_config(page_title="Week 10 • Geography & Channels", layout="wide")
-
-st.markdown("""
-<style>
-html, body, [class*="css"] { font-size: 0.88rem !important; }
-[data-testid="metric-container"] { min-width: 120px; }
-[data-testid="metric-container"] [data-testid="stMetricValue"] { font-size: 1.25rem !important; }
-[data-testid="metric-container"] [data-testid="stMetricLabel"] { font-size: 0.85rem !important; }
-.block-container { padding-top: 1.2rem; padding-bottom: 2rem; max-width: 1400px; }
-div[data-testid="column"] { padding-left: 0.35rem; padding-right: 0.35rem; }
-.js-plotly-plot .plot-container { width: 100% !important; }
-[data-testid="stDataFrame"] { width: 100% !important; }
-</style>
-""", unsafe_allow_html=True)
-
 st.title("Week 10 — Geography & Channels Deep Dive")
 st.caption("World map • Geography × Channels • Shipping lag by Country + City • Stats • $ CAD")
 
@@ -98,10 +84,6 @@ def heatmap_from_pivot(pv: pd.DataFrame, title: str, ztitle: str):
         )
     )
     fig.update_layout(title=title, margin=dict(l=0, r=0, t=60, b=0))
-    return fig
-
-def fig_tight(fig):
-    fig.update_layout(margin=dict(l=10, r=10, t=60, b=10))
     return fig
 
 if not DATA_FILE.exists():
@@ -253,7 +235,7 @@ with tabs[1]:
                       "Value: %{z:$,.0f} CAD<br>"
                       "Share: %{customdata[0]:.1%}<extra></extra>"
     )
-    fig = fig_tight(fig)
+    fig.update_layout(margin=dict(l=0, r=0, t=60, b=0))
     st.plotly_chart(fig, use_container_width=True)
     download_html(fig, "01_world_map.html")
 
@@ -271,7 +253,6 @@ with tabs[2]:
         fig1 = px.bar(top_c, x="Country", y="value", title=f"Top {top_n} Countries ({metric})")
         fig1.update_layout(xaxis={"categoryorder": "total descending"})
         fig1.update_traces(hovertemplate="<b>%{x}</b><br>Value: %{y:$,.0f} CAD<extra></extra>")
-        fig1 = fig_tight(fig1)
         st.plotly_chart(fig1, use_container_width=True)
         download_html(fig1, "02_top_countries.html")
 
@@ -281,7 +262,6 @@ with tabs[2]:
         fig2 = px.bar(ch, x="Channel", y="value", title=f"{metric} by Channel ($ CAD)")
         fig2.update_layout(xaxis={"categoryorder": "total descending"})
         fig2.update_traces(hovertemplate="<b>%{x}</b><br>Value: %{y:$,.0f} CAD<extra></extra>")
-        fig2 = fig_tight(fig2)
         st.plotly_chart(fig2, use_container_width=True)
         download_html(fig2, "03_channel_bar.html")
 
@@ -290,7 +270,6 @@ with tabs[2]:
     df_top = f[f["Country"].isin(top_idx)]
     pv = df_top.pivot_table(values=metric, index="Country", columns="Channel", aggfunc="sum", fill_value=0)
     fig3 = heatmap_from_pivot(pv, f"Heatmap: {metric} ($ CAD)", "$ CAD")
-    fig3 = fig_tight(fig3)
     st.plotly_chart(fig3, use_container_width=True)
     download_html(fig3, "04_country_channel_heatmap.html")
 
@@ -300,17 +279,18 @@ with tabs[2]:
     mix["share"] = mix["value"] / mix["country_total"]
     fig4 = px.bar(mix, x="Country", y="share", color="Channel", barmode="stack", title="Channel Mix (Share of Country Total)")
     fig4.update_layout(yaxis_tickformat=".0%", xaxis={"categoryorder": "total descending"})
-    fig4 = fig_tight(fig4)
     st.plotly_chart(fig4, use_container_width=True)
     download_html(fig4, "05_channel_mix_share.html")
 
 with tabs[3]:
     st.subheader("Shipping lag tied to both Country + City")
+
     lag_df = f.dropna(subset=[lag_col]).copy()
     if lag_df.empty:
         st.info("No usable shipping lag values after filters.")
     else:
         lag_df["Ship Lag (days)"] = lag_df[lag_col].astype(float)
+
         col1, col2 = st.columns(2)
 
         with col1:
@@ -318,7 +298,6 @@ with tabs[3]:
                           .mean().sort_values(ascending=False).head(20).reset_index())
             fig1 = px.bar(by_country, x="Country", y="Ship Lag (days)", title="Avg Ship Lag by Country (days)")
             fig1.update_layout(xaxis={"categoryorder": "total descending"})
-            fig1 = fig_tight(fig1)
             st.plotly_chart(fig1, use_container_width=True)
             download_html(fig1, "06_ship_lag_by_country.html")
 
@@ -328,12 +307,12 @@ with tabs[3]:
                        .sort_values(ascending=False).head(15).reset_index())
             fig2 = px.bar(by_city, x="City", y="Ship Lag (days)", title=f"Avg Ship Lag by City in {pick} (Top 15)")
             fig2.update_layout(xaxis={"categoryorder": "total descending"})
-            fig2 = fig_tight(fig2)
             st.plotly_chart(fig2, use_container_width=True)
             download_html(fig2, "07_ship_lag_by_city.html")
 
         with col2:
             min_orders = st.slider("Minimum orders per Country+City", 2, 15, 5)
+
             cc = (lag_df.groupby(["Country", "City"]).agg(
                 orders=("Sale ID", "count"),
                 avg_lag=("Ship Lag (days)", "mean"),
@@ -355,7 +334,6 @@ with tabs[3]:
 
             pv2 = sub.pivot_table(values="Ship Lag (days)", index="Country", columns="City", aggfunc="mean")
             fig3 = heatmap_from_pivot(pv2, "Avg Ship Lag Heatmap (Country × City)", "days")
-            fig3 = fig_tight(fig3)
             st.plotly_chart(fig3, use_container_width=True)
             download_html(fig3, "08_ship_lag_heatmap_country_city.html")
 
@@ -365,7 +343,6 @@ with tabs[3]:
             fig4 = px.scatter(samp, x="Ship Lag (days)", y=metric, color="Channel",
                               title=f"Ship Lag vs {metric} ($ CAD)", hover_data=["Country", "City"])
             fig4.update_traces(hovertemplate="Lag: %{x:.0f} days<br>Value: %{y:$,.0f} CAD<extra></extra>")
-            fig4 = fig_tight(fig4)
             st.plotly_chart(fig4, use_container_width=True)
             download_html(fig4, "09_ship_lag_scatter.html")
 
@@ -381,7 +358,6 @@ with tabs[4]:
     ts_df = f.groupby("Month")[metric].sum().reset_index().rename(columns={metric: "value"})
     fig = px.line(ts_df, x="Month", y="value", title=f"Monthly {metric} ($ CAD)")
     fig.update_traces(hovertemplate="Month: %{x|%Y-%m}<br>Value: %{y:$,.0f} CAD<extra></extra>")
-    fig = fig_tight(fig)
     st.plotly_chart(fig, use_container_width=True)
     download_html(fig, "10_monthly_trend.html")
 
@@ -434,6 +410,7 @@ with tabs[5]:
 
 with tabs[6]:
     st.subheader("Clean tables + download")
+
     colA, colB = st.columns(2)
 
     with colA:
