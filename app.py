@@ -4,14 +4,29 @@ import pandas as pd
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
+import plotly.io as pio
 from scipy import stats
 
 st.set_page_config(page_title="Week 10 • Geography & Channels", layout="wide")
 st.title("Week 10 — Geography & Channels Deep Dive")
-st.caption("World maps + deep visuals + statistical tests + recommendations (auto-load from repo).")
+st.caption("World map • Geography × Channels • Shipping lag by Country + City • Stats • $ CAD")
 
 BASE = pathlib.Path(__file__).parent
 DATA_FILE = BASE / "Combined_Sales_2025 (2).csv"
+
+ESSENTIAL = [
+    "Sale ID", "Date", "Country", "City", "Channel",
+    "Price (CAD)", "Discount (CAD)", "Shipping (CAD)", "Taxes Collected (CAD)", "Shipped Date"
+]
+
+@st.cache_data(show_spinner=False)
+def load_csv(p: pathlib.Path) -> pd.DataFrame:
+    try:
+        d = pd.read_csv(p)
+    except Exception:
+        d = pd.read_csv(p, encoding="utf-8-sig")
+    d.columns = d.columns.str.strip()
+    return d
 
 def _clean_str(s: pd.Series) -> pd.Series:
     return s.astype(str).str.strip().replace({"nan": np.nan, "None": np.nan, "": np.nan})
@@ -30,483 +45,418 @@ def normalize_country(x: str) -> str:
     }
     return patches.get(s.lower(), s)
 
-@st.cache_data(show_spinner=False)
-def load_data(path: str) -> pd.DataFrame:
+def cad(x, decimals=0):
+    if x is None or (isinstance(x, float) and not np.isfinite(x)):
+        return "-"
     try:
-        d = pd.read_csv(path)
+        return f"${float(x):,.{decimals}f} CAD"
     except Exception:
-        d = pd.read_csv(path, encoding="utf-8-sig")
-    d.columns = d.columns.str.strip()
-    return d
+        return "-"
 
-def country_to_iso3(name: str):
-    try:
-        import pycountry
-    except Exception:
-        return None
-    s = normalize_country(name)
-    if not s:
-        return None
-    direct = {
-        "United States": "USA",
-        "United Kingdom": "GBR",
-        "Russia": "RUS",
-        "South Korea": "KOR",
-        "Hong Kong": "HKG",
-    }
-    if s in direct:
-        return direct[s]
-    try:
-        c = pycountry.countries.lookup(s)
-        return getattr(c, "alpha_3", None)
-    except Exception:
-        return None
+def p_fmt(p):
+    if p is None or (isinstance(p, float) and not np.isfinite(p)):
+        return "-"
+    p = float(p)
+    return "<0.0001" if p < 1e-4 else f"{p:.4f}"
 
-def epsilon_squared_kruskal(H: float, n: int, k: int) -> float:
-    if n <= k:
-        return np.nan
-    return float((H - k + 1) / (n - k))
+def rank_df(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out.insert(0, "#", range(1, len(out) + 1))
+    return out
 
-def cramers_v(ct: pd.DataFrame) -> float:
-    chi2, _, _, _ = stats.chi2_contingency(ct)
-    n = ct.to_numpy().sum()
-    if n == 0:
-        return np.nan
-    r, k = ct.shape
-    denom = min(k - 1, r - 1)
-    if denom <= 0:
-        return np.nan
-    return float(np.sqrt((chi2 / n) / denom))
-
-def holm_adjust(pvals):
-    m = len(pvals)
-    order = np.argsort(pvals)
-    adj = np.empty(m, dtype=float)
-    prev = 0.0
-    for i, idx in enumerate(order):
-        val = (m - i) * pvals[idx]
-        val = min(1.0, max(val, prev))
-        adj[idx] = val
-        prev = val
-    return adj.tolist()
-
-def gini(x: np.ndarray) -> float:
-    x = np.array(x, dtype=float)
-    x = x[np.isfinite(x)]
-    if x.size == 0:
-        return np.nan
-    x = np.sort(np.maximum(x, 0))
-    s = x.sum()
-    if s == 0:
-        return 0.0
-    n = x.size
-    idx = np.arange(1, n + 1)
-    return float((2 * (idx * x).sum() / (n * s)) - (n + 1) / n)
-
-def download_html(fig: go.Figure, name: str, label: str):
-    import plotly.io as pio
+def download_html(fig: go.Figure, filename: str):
     html = pio.to_html(fig, include_plotlyjs="cdn", full_html=True).encode("utf-8")
-    st.download_button(label, data=html, file_name=name, mime="text/html")
+    st.download_button(
+        label="Download HTML",
+        data=html,
+        file_name=filename,
+        mime="text/html",
+        key=f"dl_{filename}"
+    )
+
+def heatmap_from_pivot(pv: pd.DataFrame, title: str, ztitle: str):
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=pv.values,
+            x=pv.columns.tolist(),
+            y=pv.index.tolist(),
+            colorbar=dict(title=ztitle)
+        )
+    )
+    fig.update_layout(title=title, margin=dict(l=0, r=0, t=60, b=0))
+    return fig
 
 if not DATA_FILE.exists():
     st.error("Dataset file not found. Put 'Combined_Sales_2025 (2).csv' in the SAME folder as app.py in your repo.")
     st.stop()
 
-df = load_data(str(DATA_FILE))
-
-required = ["Sale ID", "Date", "Country", "Channel", "Price (CAD)", "Discount (CAD)", "Shipping (CAD)", "Taxes Collected (CAD)", "Shipped Date"]
-missing = [c for c in required if c not in df.columns]
+df = load_csv(DATA_FILE)
+missing = [c for c in ESSENTIAL if c not in df.columns]
 if missing:
-    st.error(f"Missing required columns: {', '.join(missing)}")
+    st.error("Missing required columns: " + ", ".join(missing))
     st.stop()
+
+text_cols = ["Country", "City", "Channel", "Customer Type", "Product Type", "Lead Source", "Consignment? (Y/N)"]
+for c in text_cols:
+    if c in df.columns:
+        df[c] = _clean_str(df[c])
+
+df["Country"] = df["Country"].apply(normalize_country)
 
 df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
 df["Shipped Date"] = pd.to_datetime(df["Shipped Date"], errors="coerce")
-df["Country"] = _clean_str(df["Country"]).apply(normalize_country)
-df["Channel"] = _clean_str(df["Channel"])
-df["Customer Type"] = _clean_str(df.get("Customer Type", pd.Series([np.nan] * len(df))))
-df["Product Type"] = _clean_str(df.get("Product Type", pd.Series([np.nan] * len(df))))
-df["Lead Source"] = _clean_str(df.get("Lead Source", pd.Series([np.nan] * len(df))))
-df["City"] = _clean_str(df.get("City", pd.Series([np.nan] * len(df))))
-df["Consignment? (Y/N)"] = _clean_str(df.get("Consignment? (Y/N)", pd.Series([np.nan] * len(df))))
 
-for c in ["Price (CAD)", "Discount (CAD)", "Shipping (CAD)", "Taxes Collected (CAD)", "length", "width", "weight", "Color Count (#)"]:
+num_cols = ["Price (CAD)", "Discount (CAD)", "Shipping (CAD)", "Taxes Collected (CAD)",
+            "Color Count (#)", "length", "width", "weight"]
+for c in num_cols:
     if c in df.columns:
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
 df["Net Sales (CAD)"] = (df["Price (CAD)"] - df["Discount (CAD)"]).clip(lower=0)
 df["Total Collected (CAD)"] = (df["Net Sales (CAD)"] + df["Shipping (CAD)"].fillna(0) + df["Taxes Collected (CAD)"].fillna(0)).clip(lower=0)
-df["Ship Lag (days)"] = (df["Shipped Date"] - df["Date"]).dt.days
+df["Discount Rate"] = np.where(df["Price (CAD)"] > 0, df["Discount (CAD)"] / df["Price (CAD)"], np.nan)
+
+df["Ship Lag Raw (days)"] = (df["Shipped Date"] - df["Date"]).dt.days
+df["Ship Lag Clean (days)"] = np.where(df["Ship Lag Raw (days)"] >= 0, df["Ship Lag Raw (days)"], np.nan)
 df["Month"] = df["Date"].dt.to_period("M").dt.to_timestamp()
 
 st.sidebar.header("Filters")
-min_d, max_d = df["Date"].min(), df["Date"].max()
+min_d = df["Date"].min()
+max_d = df["Date"].max()
+if pd.isna(min_d) or pd.isna(max_d):
+    st.error("Date column could not be parsed.")
+    st.stop()
+
 dr = st.sidebar.date_input("Date range", value=(min_d.date(), max_d.date()))
-
-countries = sorted([c for c in df["Country"].dropna().unique().tolist() if c])
-channels = sorted([c for c in df["Channel"].dropna().unique().tolist() if c])
-cust_types = sorted([c for c in df["Customer Type"].dropna().unique().tolist() if c])
-prod_types = sorted([c for c in df["Product Type"].dropna().unique().tolist() if c])
-
-sel_countries = st.sidebar.multiselect("Countries", countries, default=[])
-sel_channels = st.sidebar.multiselect("Channels", channels, default=[])
-sel_cust = st.sidebar.multiselect("Customer Type", cust_types, default=[])
-sel_prod = st.sidebar.multiselect("Product Type", prod_types, default=[])
-
-metric_choice = st.sidebar.selectbox("Metric", ["Total Collected (CAD)", "Net Sales (CAD)", "Price (CAD)"], index=0)
-top_n = st.sidebar.slider("Top N (countries)", 5, 30, 12)
-
+if not isinstance(dr, tuple):
+    dr = (dr, dr)
 start = pd.to_datetime(dr[0])
 end = pd.to_datetime(dr[1]) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
 
-f = df[(df["Date"] >= start) & (df["Date"] <= end)].copy()
+metric = st.sidebar.selectbox("Metric ($ CAD)", ["Total Collected (CAD)", "Net Sales (CAD)", "Price (CAD)"], index=0)
+exclude_negative_lag = st.sidebar.toggle("Exclude negative ship lag", value=True)
+top_n = st.sidebar.slider("Top N (countries)", 5, 30, 12)
+
+countries = sorted([c for c in df["Country"].dropna().unique().tolist() if c])
+channels = sorted([c for c in df["Channel"].dropna().unique().tolist() if c])
+sel_countries = st.sidebar.multiselect("Countries", countries, default=[])
+sel_channels = st.sidebar.multiselect("Channels", channels, default=[])
+
+base = df[(df["Date"] >= start) & (df["Date"] <= end)].copy()
 if sel_countries:
-    f = f[f["Country"].isin(sel_countries)]
+    base = base[base["Country"].isin(sel_countries)]
 if sel_channels:
-    f = f[f["Channel"].isin(sel_channels)]
-if sel_cust:
-    f = f[f["Customer Type"].isin(sel_cust)]
-if sel_prod:
-    f = f[f["Product Type"].isin(sel_prod)]
+    base = base[base["Channel"].isin(sel_channels)]
+
+cities = sorted([c for c in base["City"].dropna().unique().tolist() if c])
+sel_cities = st.sidebar.multiselect("Cities (optional)", cities, default=[])
+
+f = base.copy()
+if sel_cities:
+    f = f[f["City"].isin(sel_cities)]
 
 if f.empty:
     st.warning("No rows match the current filters.")
     st.stop()
 
-metric = metric_choice
+lag_col = "Ship Lag Clean (days)" if exclude_negative_lag else "Ship Lag Raw (days)"
+
 total = float(f[metric].sum())
 orders = int(len(f))
 aov = float(f[metric].mean())
-median = float(f[metric].median())
+median_val = float(f[metric].median())
 
 country_totals = f.groupby("Country")[metric].sum().sort_values(ascending=False)
 channel_totals = f.groupby("Channel")[metric].sum().sort_values(ascending=False)
 
-anchor_country = country_totals.index[0] if len(country_totals) else "-"
-anchor_share = float(country_totals.iloc[0] / country_totals.sum()) if country_totals.sum() else np.nan
-top3_share = float(country_totals.head(3).sum() / country_totals.sum()) if country_totals.sum() else np.nan
-gini_c = gini(country_totals.values) if len(country_totals) else np.nan
+top_country = country_totals.index[0] if len(country_totals) else "-"
+top_channel = channel_totals.index[0] if len(channel_totals) else "-"
 
-anchor_channel = channel_totals.index[0] if len(channel_totals) else "-"
-anchor_channel_share = float(channel_totals.iloc[0] / channel_totals.sum()) if channel_totals.sum() else np.nan
+cons_rate = float((f["Consignment? (Y/N)"].astype(str).str.upper().eq("Y").mean()) * 100) if "Consignment? (Y/N)" in f.columns else np.nan
+neg_lag_rows = int((f["Ship Lag Raw (days)"] < 0).sum())
+avg_lag = float(np.nanmean(f[lag_col].values)) if f[lag_col].notna().any() else np.nan
 
-cons_rate = float((f["Consignment? (Y/N)"].str.upper().eq("Y").mean()) * 100) if "Consignment? (Y/N)" in f.columns else np.nan
-avg_ship_lag = float(f["Ship Lag (days)"].mean()) if f["Ship Lag (days)"].notna().any() else np.nan
-
-k1, k2, k3, k4, k5, k6, k7, k8 = st.columns(8)
+k1, k2, k3, k4, k5, k6, k7, k8, k9 = st.columns(9)
 k1.metric("Orders", f"{orders:,}")
-k2.metric("Total", f"{total:,.0f}")
-k3.metric("Avg Order", f"{aov:,.0f}")
-k4.metric("Median", f"{median:,.0f}")
-k5.metric("Top Country", anchor_country if anchor_country else "-")
-k6.metric("Top Channel", anchor_channel if anchor_channel else "-")
-k7.metric("Consignment %", f"{cons_rate:.1f}%" if np.isfinite(cons_rate) else "-")
-k8.metric("Avg Ship Lag", f"{avg_ship_lag:.1f}d" if np.isfinite(avg_ship_lag) else "-")
+k2.metric("Total", cad(total, 0))
+k3.metric("Avg Order", cad(aov, 0))
+k4.metric("Median", cad(median_val, 0))
+k5.metric("Top Country", top_country if top_country else "-")
+k6.metric("Top Channel", top_channel if top_channel else "-")
+k7.metric("Consignment", f"{cons_rate:.1f}%" if np.isfinite(cons_rate) else "-")
+k8.metric("Avg Ship Lag", f"{avg_lag:.1f} days" if np.isfinite(avg_lag) else "-")
+k9.metric("Neg Ship Lag Rows", f"{neg_lag_rows:,}")
 
-st.divider()
-
-tabs = st.tabs(["1) Overview", "2) World Maps", "3) Geography", "4) Channels", "5) Mix", "6) Time", "7) Stats", "8) Data"])
+tabs = st.tabs(["Overview", "World Map", "Geography × Channels", "Shipping Lag (Country + City)", "Time", "Stats", "Data"])
 
 with tabs[0]:
-    st.subheader("Key insights")
-    lines = []
-    if np.isfinite(anchor_share):
-        lines.append(f"- Concentration: **{anchor_country}** contributes ~**{anchor_share:.1%}** of {metric}.")
-    if np.isfinite(top3_share):
-        lines.append(f"- Top 3 countries contribute ~**{top3_share:.1%}** of total.")
-    if np.isfinite(gini_c):
-        lines.append(f"- Country concentration (Gini): **{gini_c:.2f}** (higher = more concentrated).")
-    if np.isfinite(anchor_channel_share):
-        lines.append(f"- Top channel (**{anchor_channel}**) contributes ~**{anchor_channel_share:.1%}** of total.")
-    st.markdown("\n".join(lines) if lines else "- -")
+    st.subheader("Insights")
+    share_top = float(country_totals.iloc[0] / country_totals.sum()) if country_totals.sum() else np.nan
+    bullets = []
+    if np.isfinite(share_top):
+        bullets.append(f"- Concentration: **{top_country}** contributes ~**{share_top*100:.1f}%** of {metric}.")
+    bullets.append(f"- Top channel by {metric}: **{top_channel}**.")
+    if np.isfinite(cons_rate):
+        bullets.append(f"- Consignment share: **{cons_rate:.1f}%** of orders.")
+    if neg_lag_rows > 0:
+        bullets.append(f"- Data note: **{neg_lag_rows}** rows have negative ship lag (excluded from lag charts if toggle is ON).")
+    st.markdown("\n".join(bullets) if bullets else "-")
 
     st.subheader("Recommendations")
     recs = []
-    if np.isfinite(anchor_share) and anchor_share >= 0.5:
-        recs.append("- Protect the anchor market (inventory + fulfillment + pricing discipline) because it drives most results.")
-        recs.append("- Scale 2–3 secondary markets using their strongest channel (see heatmap + mix).")
+    if np.isfinite(share_top) and share_top >= 0.5:
+        recs += [
+            "- Protect the anchor country with inventory + fulfillment reliability + channel execution.",
+            "- Scale 2–3 next-tier countries using the channels that already win there (see heatmap).",
+        ]
     else:
-        recs.append("- Set market tiers (anchor/growth/test) and align channel strategy by tier.")
-    if np.isfinite(gini_c) and gini_c >= 0.6:
-        recs.append("- Concentration is high: define growth targets for the next tier markets and track weekly progress.")
-    if np.isfinite(avg_ship_lag) and avg_ship_lag >= 14:
-        recs.append("- Shipping lag is material: diagnose bottlenecks by channel and country; set SLA targets.")
-    st.markdown("\n".join(recs) if recs else "- -")
+        recs += ["- Use market tiers (anchor/growth/test) and align channel strategy per tier."]
+    if neg_lag_rows > 0:
+        recs += ["- Fix negative ship lag (date entry / shipping record) so operational KPIs are reliable."]
+    st.markdown("\n".join(recs) if recs else "-")
 
 with tabs[1]:
-    st.subheader("World revenue map (choropleth)")
-    agg = country_totals.reset_index().rename(columns={metric: "metric"})
-    agg["share"] = agg["metric"] / agg["metric"].sum()
-    agg["iso3"] = agg["Country"].apply(country_to_iso3)
+    st.subheader(f"World map — {metric} ($ CAD)")
+    agg = country_totals.reset_index().rename(columns={metric: "value"})
+    agg["share"] = agg["value"] / agg["value"].sum()
 
-    mapped = agg[agg["iso3"].notna()].copy()
-    if len(mapped) >= 2:
-        fig = px.choropleth(
-            mapped,
-            locations="iso3",
-            color="metric",
-            hover_name="Country",
-            hover_data={"metric": ":,.0f", "share": ".1%"},
-            projection="natural earth",
-            title=f"World Map — {metric} by Country"
-        )
-        fig.update_layout(margin=dict(l=0, r=0, t=50, b=0))
-        st.plotly_chart(fig, use_container_width=True)
-        download_html(fig, "01_world_map.html", "Download world map (HTML)")
-    else:
-        fig = px.choropleth(
-            agg,
-            locations="Country",
-            locationmode="country names",
-            color="metric",
-            hover_name="Country",
-            hover_data={"metric": ":,.0f", "share": ".1%"},
-            projection="natural earth",
-            title=f"World Map — {metric} by Country"
-        )
-        fig.update_layout(margin=dict(l=0, r=0, t=50, b=0))
-        st.plotly_chart(fig, use_container_width=True)
-        download_html(fig, "01_world_map_country_names.html", "Download world map (HTML)")
-
-    st.markdown("**Insight:** This shows global revenue concentration at a glance.\n\n"
-                "**Recommendation:** Defend anchor markets; choose 2–3 growth markets and scale the channels that already win locally.")
-
-    st.subheader("Top markets table")
-    top_tbl = agg.sort_values("metric", ascending=False).head(15).copy()
-    top_tbl["metric"] = top_tbl["metric"].round(0)
-    top_tbl.insert(0, "#", range(1, len(top_tbl) + 1))
-    st.dataframe(top_tbl.set_index("#")[["Country", "metric", "share"]], use_container_width=True)
-
-    st.subheader("Bubble map (top countries)")
-    top_b = agg.sort_values("metric", ascending=False).head(top_n).copy()
-    top_b["iso3"] = top_b["Country"].apply(country_to_iso3)
-    use_iso = top_b["iso3"].notna().mean() >= 0.7
-    fig2 = px.scatter_geo(
-        top_b,
-        locations="iso3" if use_iso else "Country",
-        locationmode="ISO-3" if use_iso else "country names",
-        size="metric",
+    fig = px.choropleth(
+        agg,
+        locations="Country",
+        locationmode="country names",
+        color="value",
         hover_name="Country",
-        hover_data={"metric": ":,.0f", "share": ".1%"},
-        title=f"Bubble Map — Top {top_n} Countries"
+        custom_data=["share"],
+        projection="natural earth",
+        title=f"World Map — {metric} ($ CAD)"
     )
-    fig2.update_layout(margin=dict(l=0, r=0, t=50, b=0))
-    st.plotly_chart(fig2, use_container_width=True)
-    download_html(fig2, "02_bubble_map.html", "Download bubble map (HTML)")
+    fig.update_traces(
+        hovertemplate="<b>%{location}</b><br>"
+                      "Value: %{z:$,.0f} CAD<br>"
+                      "Share: %{customdata[0]:.1%}<extra></extra>"
+    )
+    fig.update_layout(margin=dict(l=0, r=0, t=60, b=0))
+    st.plotly_chart(fig, use_container_width=True)
+    download_html(fig, "01_world_map.html")
+
+    st.subheader("Top markets")
+    top_tbl = agg.sort_values("value", ascending=False).head(15).copy()
+    top_tbl = rank_df(top_tbl)
+    st.dataframe(top_tbl.set_index("#")[["Country", "value", "share"]], use_container_width=True)
 
 with tabs[2]:
-    st.subheader("Top countries (bar)")
-    top_c = country_totals.head(top_n).reset_index().rename(columns={metric: "metric"})
-    fig = px.bar(top_c, x="Country", y="metric", title=f"Top {top_n} Countries by {metric}")
-    fig.update_layout(xaxis={"categoryorder": "total descending"})
-    st.plotly_chart(fig, use_container_width=True)
-    download_html(fig, "03_top_countries.html", "Download chart (HTML)")
-    st.markdown("**Insight:** Identifies anchor vs secondary markets.\n\n"
-                "**Recommendation:** Protect anchor markets and build a specific growth plan for the next tier.")
+    colA, colB = st.columns(2)
 
-    st.subheader("Pareto concentration (cumulative share)")
-    pareto = country_totals.reset_index().rename(columns={metric: "metric"})
-    pareto["rank"] = np.arange(1, len(pareto) + 1)
-    pareto["cum_share"] = pareto["metric"].cumsum() / pareto["metric"].sum()
-    fig2 = go.Figure()
-    fig2.add_trace(go.Bar(x=pareto["rank"][:top_n], y=pareto["metric"][:top_n], name="Metric"))
-    fig2.add_trace(go.Scatter(x=pareto["rank"][:top_n], y=pareto["cum_share"][:top_n], name="Cumulative Share", yaxis="y2"))
-    fig2.update_layout(
-        title=f"Pareto — Top {top_n} Country Ranks",
-        xaxis=dict(title="Country rank"),
-        yaxis=dict(title=f"{metric}"),
-        yaxis2=dict(title="Cumulative share", overlaying="y", side="right", tickformat=".0%")
-    )
-    st.plotly_chart(fig2, use_container_width=True)
-    download_html(fig2, "04_pareto.html", "Download chart (HTML)")
-    t5 = float(country_totals.head(min(5, len(country_totals))).sum() / country_totals.sum()) if country_totals.sum() else np.nan
-    st.markdown(f"**Insight:** Top {min(5, len(country_totals))} countries contribute ~**{t5:.1%}**.\n\n"
-                "**Recommendation:** If concentration is high, reduce dependency by scaling the next tier markets.")
+    with colA:
+        st.subheader(f"Top countries by {metric}")
+        top_c = country_totals.head(top_n).reset_index().rename(columns={metric: "value"})
+        fig1 = px.bar(top_c, x="Country", y="value", title=f"Top {top_n} Countries ({metric})")
+        fig1.update_layout(xaxis={"categoryorder": "total descending"})
+        fig1.update_traces(hovertemplate="<b>%{x}</b><br>Value: %{y:$,.0f} CAD<extra></extra>")
+        st.plotly_chart(fig1, use_container_width=True)
+        download_html(fig1, "02_top_countries.html")
 
-    st.subheader("Cities (top 15)")
-    if f["City"].notna().any():
-        city_totals = f.groupby("City")[metric].sum().sort_values(ascending=False).head(15).reset_index().rename(columns={metric: "metric"})
-        fig3 = px.bar(city_totals, x="City", y="metric", title="Top Cities by Metric (Top 15)")
-        fig3.update_layout(xaxis={"categoryorder": "total descending"})
-        st.plotly_chart(fig3, use_container_width=True)
-        download_html(fig3, "05_top_cities.html", "Download chart (HTML)")
-        st.markdown("**Insight:** Shows which cities are the biggest pockets of demand.\n\n"
-                    "**Recommendation:** Target events/partners/logistics in these cities first.")
-    else:
-        st.info("City column is empty for the filtered subset.")
+    with colB:
+        st.subheader(f"{metric} by channel")
+        ch = channel_totals.reset_index().rename(columns={metric: "value"})
+        fig2 = px.bar(ch, x="Channel", y="value", title=f"{metric} by Channel ($ CAD)")
+        fig2.update_layout(xaxis={"categoryorder": "total descending"})
+        fig2.update_traces(hovertemplate="<b>%{x}</b><br>Value: %{y:$,.0f} CAD<extra></extra>")
+        st.plotly_chart(fig2, use_container_width=True)
+        download_html(fig2, "03_channel_bar.html")
 
-with tabs[3]:
-    st.subheader("Revenue by channel (bar)")
-    ch = channel_totals.reset_index().rename(columns={metric: "metric"})
-    fig = px.bar(ch, x="Channel", y="metric", title=f"{metric} by Channel")
-    fig.update_layout(xaxis={"categoryorder": "total descending"})
-    st.plotly_chart(fig, use_container_width=True)
-    download_html(fig, "06_channel_bar.html", "Download chart (HTML)")
-    st.markdown("**Insight:** Shows which channel is actually driving value.\n\n"
-                "**Recommendation:** Invest in the top channels; fix or redesign low-performing ones.")
-
-    st.subheader("Order value distribution by channel (box)")
-    fig2 = px.box(f, x="Channel", y=metric, points="outliers", title=f"Distribution of {metric} by Channel")
-    fig2.update_layout(xaxis={"categoryorder": "total descending"})
-    st.plotly_chart(fig2, use_container_width=True)
-    download_html(fig2, "07_channel_box.html", "Download chart (HTML)")
-    st.markdown("**Insight:** Shows volatility/outliers by channel.\n\n"
-                "**Recommendation:** For high-variance channels, set pricing/discount guardrails and forecasting buffers.")
-
-    st.subheader("Lead source (top 12)")
-    if f["Lead Source"].notna().any():
-        ls = f.groupby("Lead Source")[metric].sum().sort_values(ascending=False).head(12).reset_index().rename(columns={metric: "metric"})
-        fig3 = px.bar(ls, x="Lead Source", y="metric", title=f"Top Lead Sources by {metric} (Top 12)")
-        fig3.update_layout(xaxis={"categoryorder": "total descending"})
-        st.plotly_chart(fig3, use_container_width=True)
-        download_html(fig3, "08_lead_source.html", "Download chart (HTML)")
-        st.markdown("**Insight:** Identifies which sources generate the most value.\n\n"
-                    "**Recommendation:** Shift marketing and partnerships toward high-value lead sources.")
-    else:
-        st.info("Lead Source column is empty for the filtered subset.")
-
-with tabs[4]:
-    st.subheader("Country × Channel heatmap")
+    st.subheader("Country × Channel heatmap (Top countries)")
     top_idx = country_totals.head(top_n).index
     df_top = f[f["Country"].isin(top_idx)]
     pv = df_top.pivot_table(values=metric, index="Country", columns="Channel", aggfunc="sum", fill_value=0)
-    fig = px.imshow(pv, title=f"Heatmap: {metric} by Country & Channel (Top {top_n} countries)",
-                    labels=dict(x="Channel", y="Country", color=metric))
-    st.plotly_chart(fig, use_container_width=True)
-    download_html(fig, "09_heatmap.html", "Download heatmap (HTML)")
-    st.markdown("**Insight:** Shows which channels dominate per country.\n\n"
-                "**Recommendation:** Build a per-market channel playbook instead of one global playbook.")
-
-    st.subheader("Channel mix share by country (stacked)")
-    mix = df_top.groupby(["Country", "Channel"])[metric].sum().reset_index().rename(columns={metric: "metric"})
-    mix["country_total"] = mix.groupby("Country")["metric"].transform("sum")
-    mix["share"] = mix["metric"] / mix["country_total"]
-    fig2 = px.bar(mix, x="Country", y="share", color="Channel", barmode="stack",
-                  title="Channel Mix by Country (Share of Total)", labels={"share": "Share"})
-    fig2.update_layout(yaxis_tickformat=".0%", xaxis={"categoryorder": "total descending"})
-    st.plotly_chart(fig2, use_container_width=True)
-    download_html(fig2, "10_mix_share.html", "Download mix chart (HTML)")
-    st.markdown("**Insight:** Shows dependence on single channels per market.\n\n"
-                "**Recommendation:** Where one channel is >70% of a market, diversify with a controlled test of a second channel.")
-
-    st.subheader("Treemap: country → channel")
-    treemap = df_top.groupby(["Country", "Channel"])[metric].sum().reset_index().rename(columns={metric: "metric"})
-    fig3 = px.treemap(treemap, path=["Country", "Channel"], values="metric", title="Treemap: Contribution by Country & Channel")
+    fig3 = heatmap_from_pivot(pv, f"Heatmap: {metric} ($ CAD)", "$ CAD")
     st.plotly_chart(fig3, use_container_width=True)
-    download_html(fig3, "11_treemap.html", "Download treemap (HTML)")
+    download_html(fig3, "04_country_channel_heatmap.html")
+
+    st.subheader("Channel mix share by country (Top countries)")
+    mix = df_top.groupby(["Country", "Channel"])[metric].sum().reset_index().rename(columns={metric: "value"})
+    mix["country_total"] = mix.groupby("Country")["value"].transform("sum")
+    mix["share"] = mix["value"] / mix["country_total"]
+    fig4 = px.bar(mix, x="Country", y="share", color="Channel", barmode="stack", title="Channel Mix (Share of Country Total)")
+    fig4.update_layout(yaxis_tickformat=".0%", xaxis={"categoryorder": "total descending"})
+    st.plotly_chart(fig4, use_container_width=True)
+    download_html(fig4, "05_channel_mix_share.html")
+
+with tabs[3]:
+    st.subheader("Shipping lag tied to both Country + City")
+
+    lag_df = f.dropna(subset=[lag_col]).copy()
+    if lag_df.empty:
+        st.info("No usable shipping lag values after filters.")
+    else:
+        lag_df["Ship Lag (days)"] = lag_df[lag_col].astype(float)
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            by_country = (lag_df.groupby("Country")["Ship Lag (days)"]
+                          .mean().sort_values(ascending=False).head(20).reset_index())
+            fig1 = px.bar(by_country, x="Country", y="Ship Lag (days)", title="Avg Ship Lag by Country (days)")
+            fig1.update_layout(xaxis={"categoryorder": "total descending"})
+            st.plotly_chart(fig1, use_container_width=True)
+            download_html(fig1, "06_ship_lag_by_country.html")
+
+            pick = st.selectbox("Pick a country (city drilldown)", sorted(lag_df["Country"].unique().tolist()))
+            by_city = (lag_df[lag_df["Country"] == pick]
+                       .groupby("City")["Ship Lag (days)"].mean()
+                       .sort_values(ascending=False).head(15).reset_index())
+            fig2 = px.bar(by_city, x="City", y="Ship Lag (days)", title=f"Avg Ship Lag by City in {pick} (Top 15)")
+            fig2.update_layout(xaxis={"categoryorder": "total descending"})
+            st.plotly_chart(fig2, use_container_width=True)
+            download_html(fig2, "07_ship_lag_by_city.html")
+
+        with col2:
+            min_orders = st.slider("Minimum orders per Country+City", 2, 15, 5)
+
+            cc = (lag_df.groupby(["Country", "City"]).agg(
+                orders=("Sale ID", "count"),
+                avg_lag=("Ship Lag (days)", "mean"),
+                med_lag=("Ship Lag (days)", "median"),
+                total_metric=(metric, "sum")
+            ).reset_index())
+            cc = cc[cc["orders"] >= min_orders].copy()
+            cc = cc.sort_values(["avg_lag", "orders"], ascending=[False, False]).head(25)
+            cc["total_metric"] = cc["total_metric"].round(0)
+            cc["avg_lag"] = cc["avg_lag"].round(1)
+            cc["med_lag"] = cc["med_lag"].round(1)
+            cc = rank_df(cc).rename(columns={"total_metric": f"Total ({metric})"})
+            st.dataframe(cc.set_index("#")[["Country", "City", "orders", "avg_lag", "med_lag", f"Total ({metric})"]], use_container_width=True)
+
+            top_countries = (lag_df.groupby("Country")[metric].sum().sort_values(ascending=False).head(12).index)
+            sub = lag_df[lag_df["Country"].isin(top_countries)].copy()
+            top_cities = (sub.groupby("City")[metric].sum().sort_values(ascending=False).head(20).index)
+            sub = sub[sub["City"].isin(top_cities)].copy()
+
+            pv2 = sub.pivot_table(values="Ship Lag (days)", index="Country", columns="City", aggfunc="mean")
+            fig3 = heatmap_from_pivot(pv2, "Avg Ship Lag Heatmap (Country × City)", "days")
+            st.plotly_chart(fig3, use_container_width=True)
+            download_html(fig3, "08_ship_lag_heatmap_country_city.html")
+
+            samp = lag_df.copy()
+            if len(samp) > 2500:
+                samp = samp.sample(2500, random_state=7)
+            fig4 = px.scatter(samp, x="Ship Lag (days)", y=metric, color="Channel",
+                              title=f"Ship Lag vs {metric} ($ CAD)", hover_data=["Country", "City"])
+            fig4.update_traces(hovertemplate="Lag: %{x:.0f} days<br>Value: %{y:$,.0f} CAD<extra></extra>")
+            st.plotly_chart(fig4, use_container_width=True)
+            download_html(fig4, "09_ship_lag_scatter.html")
+
+        st.subheader("Shipping recommendations")
+        st.markdown(
+            "- Use the **Country+City hotspot table** to identify the biggest delay areas.\n"
+            "- If a **few cities** are slow inside a country: fix routes/carriers for those city clusters.\n"
+            "- If a **whole country** is slow: treat it as a different fulfillment region or SLA."
+        )
+
+with tabs[4]:
+    st.subheader(f"Time trend — {metric} ($ CAD)")
+    ts_df = f.groupby("Month")[metric].sum().reset_index().rename(columns={metric: "value"})
+    fig = px.line(ts_df, x="Month", y="value", title=f"Monthly {metric} ($ CAD)")
+    fig.update_traces(hovertemplate="Month: %{x|%Y-%m}<br>Value: %{y:$,.0f} CAD<extra></extra>")
+    st.plotly_chart(fig, use_container_width=True)
+    download_html(fig, "10_monthly_trend.html")
 
 with tabs[5]:
-    st.subheader("Monthly trend (overall)")
-    ts = f.groupby("Month")[metric].sum().reset_index().rename(columns={metric: "metric"})
-    fig = px.line(ts, x="Month", y="metric", title=f"Monthly {metric}")
-    st.plotly_chart(fig, use_container_width=True)
-    download_html(fig, "12_monthly_trend.html", "Download trend (HTML)")
-    st.markdown("**Insight:** Shows seasonality and spikes.\n\n"
-                "**Recommendation:** Investigate spikes by drilling into country/channel filters and matching to events/campaigns.")
+    st.subheader("Stats")
 
-    st.subheader("Monthly trend by channel (top 6)")
-    top_channels = channel_totals.head(6).index
-    ts2 = f[f["Channel"].isin(top_channels)].groupby(["Month", "Channel"])[metric].sum().reset_index()
-    fig2 = px.line(ts2, x="Month", y=metric, color="Channel", title=f"Monthly {metric} — Top 6 Channels")
-    st.plotly_chart(fig2, use_container_width=True)
-    download_html(fig2, "13_monthly_channels.html", "Download chart (HTML)")
-
-    st.subheader("Ship lag distribution")
-    if f["Ship Lag (days)"].notna().any():
-        fig3 = px.histogram(f, x="Ship Lag (days)", nbins=30, title="Shipping Lag (days) Distribution")
-        st.plotly_chart(fig3, use_container_width=True)
-        download_html(fig3, "14_ship_lag.html", "Download chart (HTML)")
-        st.markdown("**Insight:** Shows operational speed spread.\n\n"
-                    "**Recommendation:** Segment lag by channel/country and set SLA improvements.")
+    st.markdown("### 1) Do channels differ on order value?")
+    grp = f.groupby("Channel")[metric].apply(lambda x: x.dropna().values)
+    if len(grp) >= 2:
+        _, p = stats.kruskal(*grp.tolist())
+        st.write(f"p-value: **{p_fmt(p)}** → " + ("Different typical values across channels" if p < 0.05 else "No strong evidence of difference"))
     else:
-        st.info("Ship lag not available for the filtered subset.")
+        st.write("Not enough data for this test with current filters.")
 
-with tabs[6]:
-    st.subheader("A) Country ↔ Channel association (chi-square + Cramer's V)")
-    top_for_test = country_totals.head(min(15, len(country_totals))).index
-    f_test = f.copy()
-    f_test["Country (top)"] = np.where(f_test["Country"].isin(top_for_test), f_test["Country"], "Other")
-    ct = pd.crosstab(f_test["Country (top)"], f_test["Channel"])
+    st.markdown("### 2) Is channel mix different by country?")
+    top_for_test = country_totals.head(min(10, len(country_totals))).index
+    tmp = f.copy()
+    tmp["Country (top)"] = np.where(tmp["Country"].isin(top_for_test), tmp["Country"], "Other")
+    ct = pd.crosstab(tmp["Country (top)"], tmp["Channel"])
     if ct.shape[0] >= 2 and ct.shape[1] >= 2:
-        chi2, p, dof, _ = stats.chi2_contingency(ct)
-        v = cramers_v(ct)
-        st.write({"chi2": float(chi2), "p_value": float(p), "dof": int(dof), "cramers_v": float(v)})
-        st.markdown("**Insight:** If p < 0.05, channel mix differs across countries.\n\n"
-                    "**Recommendation:** Use market-specific channel strategies when significant.")
+        _, p2, _, _ = stats.chi2_contingency(ct)
+        st.write(f"p-value: **{p_fmt(p2)}** → " + ("Different mixes by country" if p2 < 0.05 else "No strong evidence of different mixes"))
     else:
-        st.info("Not enough categories after filters to run chi-square.")
+        st.write("Not enough data for this test with current filters.")
 
-    st.subheader("B) Do channels differ on order value? (Kruskal–Wallis + post-hoc)")
-    groups = f.groupby("Channel")[metric].apply(lambda x: x.dropna().values)
-    if len(groups) >= 2:
-        H, p_kw = stats.kruskal(*groups.tolist())
-        eps = epsilon_squared_kruskal(H, n=len(f), k=len(groups))
-        st.write({"H": float(H), "p_value": float(p_kw), "epsilon_squared": float(eps)})
-
-        chans = list(groups.index)
-        pairs, pvals = [], []
-        for i in range(len(chans)):
-            for j in range(i + 1, len(chans)):
-                a = f.loc[f["Channel"] == chans[i], metric].dropna()
-                b = f.loc[f["Channel"] == chans[j], metric].dropna()
-                if len(a) >= 10 and len(b) >= 10:
-                    _, pu = stats.mannwhitneyu(a, b, alternative="two-sided")
-                    pairs.append((chans[i], chans[j], len(a), len(b)))
-                    pvals.append(pu)
-
-        if pvals:
-            adj = holm_adjust(pvals)
-            out = pd.DataFrame({
-                "channel_a": [p[0] for p in pairs],
-                "channel_b": [p[1] for p in pairs],
-                "n_a": [p[2] for p in pairs],
-                "n_b": [p[3] for p in pairs],
-                "p_raw": pvals,
-                "p_holm": adj
-            }).sort_values("p_holm")
-            out.insert(0, "#", range(1, len(out) + 1))
-            st.dataframe(out.set_index("#"), use_container_width=True)
-    else:
-        st.info("Not enough channels after filters.")
-
-    st.subheader("C) Numeric drivers (Spearman correlation with metric)")
-    num_cols = [c for c in ["Discount (CAD)", "Shipping (CAD)", "Taxes Collected (CAD)", "Color Count (#)", "length", "width", "weight", "Ship Lag (days)"] if c in f.columns]
-    corr_rows = []
-    for c in num_cols:
+    st.markdown("### 3) Strongest numeric relationships (Spearman)")
+    driver_candidates = [
+        "Discount (CAD)", "Shipping (CAD)", "Taxes Collected (CAD)",
+        "Color Count (#)", "length", "width", "weight", lag_col
+    ]
+    drivers = [c for c in driver_candidates if c in f.columns]
+    rows = []
+    for c in drivers:
         x = f[c]
         y = f[metric]
         ok = x.notna() & y.notna()
-        if ok.sum() >= 25:
-            r, pval = stats.spearmanr(x[ok], y[ok])
-            corr_rows.append((c, float(r), float(pval), int(ok.sum())))
-    if corr_rows:
-        corr_df = pd.DataFrame(corr_rows, columns=["variable", "spearman_r", "p_value", "n"])
-        corr_df = corr_df.sort_values("spearman_r", key=lambda s: s.abs(), ascending=False)
-        corr_df.insert(0, "#", range(1, len(corr_df) + 1))
-        st.dataframe(corr_df.set_index("#"), use_container_width=True)
-        st.markdown("**Insight:** Variables with larger |r| have stronger monotonic association with the metric.\n\n"
-                    "**Recommendation:** Use this to justify where to focus (discount policy, shipping pricing, product attributes).")
+        if ok.sum() >= 30:
+            r, pv = stats.spearmanr(x[ok], y[ok])
+            rows.append((c, float(r), float(pv), int(ok.sum())))
+    if rows:
+        out = pd.DataFrame(rows, columns=["variable", "spearman_r", "p_value", "n"])
+        out["abs_r"] = out["spearman_r"].abs()
+        out = out.sort_values("abs_r", ascending=False).drop(columns=["abs_r"]).head(10).reset_index(drop=True)
+        out["spearman_r"] = out["spearman_r"].round(3)
+        out["p_value"] = out["p_value"].apply(lambda v: "<0.0001" if float(v) < 1e-4 else f"{float(v):.4f}")
+        out = rank_df(out)
+        st.dataframe(out.set_index("#"), use_container_width=True)
     else:
-        st.info("Not enough numeric data for correlation (need ~25+ usable rows).")
+        st.write("Not enough data for this test with current filters.")
 
-with tabs[7]:
-    st.subheader("Filtered data (preview)")
-    st.dataframe(f.head(300), use_container_width=True)
+with tabs[6]:
+    st.subheader("Clean tables + download")
 
-    st.subheader("Download filtered data")
-    csv = f.to_csv(index=False).encode("utf-8")
-    st.download_button("Download CSV", data=csv, file_name="filtered_data.csv", mime="text/csv")
+    colA, colB = st.columns(2)
 
-    st.subheader("Country × Channel KPI table")
-    kpi = f.groupby(["Country", "Channel"]).agg(
-        orders=("Sale ID", "count"),
-        total=(metric, "sum"),
-        avg=(metric, "mean"),
-        median=(metric, "median"),
-        consignment_rate=("Consignment? (Y/N)", lambda s: (s.str.upper().eq("Y").mean() * 100) if s.notna().any() else np.nan),
-        avg_ship_lag=("Ship Lag (days)", "mean")
-    ).reset_index()
-    kpi["share"] = kpi["total"] / kpi["total"].sum() if kpi["total"].sum() else np.nan
-    kpi = kpi.sort_values("total", ascending=False).head(40)
-    kpi.insert(0, "#", range(1, len(kpi) + 1))
-    st.dataframe(kpi.set_index("#"), use_container_width=True)
+    with colA:
+        st.markdown("### Top Countries")
+        t = country_totals.reset_index().rename(columns={metric: "Total ($ CAD)"}).head(25)
+        t["Total ($ CAD)"] = t["Total ($ CAD)"].round(0)
+        st.dataframe(rank_df(t).set_index("#"), use_container_width=True)
+
+        st.markdown("### Top Cities (Country + City)")
+        cct = f.groupby(["Country", "City"])[metric].sum().sort_values(ascending=False).head(25).reset_index().rename(columns={metric: "Total ($ CAD)"})
+        cct["Total ($ CAD)"] = cct["Total ($ CAD)"].round(0)
+        st.dataframe(rank_df(cct).set_index("#"), use_container_width=True)
+
+    with colB:
+        st.markdown("### Country × Channel KPI")
+        kpi = f.groupby(["Country", "Channel"]).agg(
+            orders=("Sale ID", "count"),
+            total=(metric, "sum"),
+            avg=(metric, "mean"),
+            median=(metric, "median"),
+            avg_ship_lag=(lag_col, "mean"),
+            avg_discount_rate=("Discount Rate", "mean")
+        ).reset_index()
+
+        kpi["total"] = kpi["total"].round(0)
+        kpi["avg"] = kpi["avg"].round(0)
+        kpi["median"] = kpi["median"].round(0)
+        kpi["avg_ship_lag"] = kpi["avg_ship_lag"].round(1)
+        kpi["avg_discount_rate"] = (kpi["avg_discount_rate"] * 100).round(1)
+
+        kpi = kpi.sort_values("total", ascending=False).head(40)
+        kpi = rank_df(kpi).rename(columns={
+            "total": "Total ($ CAD)",
+            "avg": "Avg ($ CAD)",
+            "median": "Median ($ CAD)",
+            "avg_ship_lag": "Avg Ship Lag (days)",
+            "avg_discount_rate": "Avg Discount (%)"
+        })
+        st.dataframe(kpi.set_index("#"), use_container_width=True)
+
+        st.download_button(
+            "Download filtered data (CSV)",
+            data=f.to_csv(index=False).encode("utf-8"),
+            file_name="filtered_data.csv",
+            mime="text/csv"
+        )
+
+    with st.expander("Preview (first 200 rows)"):
+        st.dataframe(f.head(200), use_container_width=True)
