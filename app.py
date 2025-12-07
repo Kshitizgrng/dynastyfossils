@@ -359,7 +359,7 @@ with tabs[3]:
     st.markdown("**Recommendation:** When the overall line moves, use this chart to identify which channel is driving the change.")
 
     st.divider()
-    st.subheader("Shipping lag (moved here under Time)")
+    st.subheader("Shipping lag")
 
     lag_df = f.dropna(subset=[lag_col]).copy()
     if lag_df.empty:
