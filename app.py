@@ -28,8 +28,8 @@ div[data-testid="column"] { padding-left: 0.40rem; padding-right: 0.40rem; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("Week 10 — Geography, Channels, Products")
-st.caption("World map • Geography × Channels • Products/SKU • Time trends + shipping lag • Stats • $ CAD")
+st.title("Week 10 — Geography & Channels Deep Dive")
+st.caption("World map • Geography × Channels • Time trends + shipping lag • Stats • $ CAD")
 
 BASE = pathlib.Path(__file__).parent
 DATA_FILE = BASE / "Combined_Sales_2025 (2).csv"
@@ -110,39 +110,6 @@ def fig_tight(fig):
     fig.update_layout(margin=dict(l=10, r=10, t=60, b=10))
     return fig
 
-def _nice_step(v: float) -> float:
-    if not np.isfinite(v) or v <= 0:
-        return 1.0
-    exp = 10 ** np.floor(np.log10(v))
-    f = v / exp
-    if f <= 1:
-        n = 1
-    elif f <= 2:
-        n = 2
-    elif f <= 5:
-        n = 5
-    else:
-        n = 10
-    return float(n * exp)
-
-def _make_colorbar_ticks(maxv: float, nticks: int = 4):
-    if not np.isfinite(maxv) or maxv <= 0:
-        return None, None
-    step = _nice_step(maxv / nticks)
-    stop = step * nticks
-    if stop < maxv:
-        stop = step * (nticks + 1)
-    tickvals = np.arange(step, stop + step / 2, step)
-    ticktext = []
-    for t in tickvals:
-        if t >= 1e6:
-            ticktext.append(f"{t/1e6:g}M")
-        elif t >= 1e3:
-            ticktext.append(f"{t/1e3:g}k")
-        else:
-            ticktext.append(f"{t:g}")
-    return tickvals.tolist(), ticktext
-
 if not DATA_FILE.exists():
     st.error("Dataset file not found. Put 'Combined_Sales_2025 (2).csv' in the SAME folder as app.py in your repo.")
     st.stop()
@@ -153,7 +120,7 @@ if missing:
     st.error("Missing required columns: " + ", ".join(missing))
     st.stop()
 
-text_cols = ["Country", "City", "Channel", "Customer Type", "Product Type", "Lead Source", "Consignment? (Y/N)", "Item ID", "Batch ID"]
+text_cols = ["Country", "City", "Channel", "Customer Type", "Product Type", "Lead Source", "Consignment? (Y/N)"]
 for c in text_cols:
     if c in df.columns:
         df[c] = _clean_str(df[c])
@@ -191,7 +158,6 @@ end = pd.to_datetime(dr[1]) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
 metric = st.sidebar.selectbox("Metric ($ CAD)", ["Total Collected (CAD)", "Net Sales (CAD)", "Price (CAD)"], index=0)
 exclude_negative_lag = st.sidebar.toggle("Exclude negative ship lag", value=True)
 top_n = st.sidebar.slider("Top N (countries)", 5, 30, 12)
-top_sku_n = st.sidebar.slider("Top N (products/SKU)", 5, 50, 15)
 
 countries = sorted([c for c in df["Country"].dropna().unique().tolist() if c])
 channels = sorted([c for c in df["Channel"].dropna().unique().tolist() if c])
@@ -232,13 +198,6 @@ cons_rate = float((f["Consignment? (Y/N)"].astype(str).str.upper().eq("Y").mean(
 neg_lag_rows = int((f["Ship Lag Raw (days)"] < 0).sum())
 avg_lag = float(np.nanmean(f[lag_col].values)) if f[lag_col].notna().any() else np.nan
 
-sku_col = "Item ID" if "Item ID" in f.columns else ("SKU" if "SKU" in f.columns else None)
-ptype_col = "Product Type" if "Product Type" in f.columns else None
-
-sku_totals = f.groupby(sku_col)[metric].sum().sort_values(ascending=False) if sku_col else pd.Series(dtype=float)
-top_sku = sku_totals.index[0] if sku_col and len(sku_totals) else "-"
-top_sku_share = float(sku_totals.iloc[0] / sku_totals.sum()) if sku_col and sku_totals.sum() else np.nan
-
 r1 = st.columns(4)
 r1[0].metric("Orders", f"{orders:,}")
 r1[1].metric("Total", cad(total, 0))
@@ -248,115 +207,66 @@ r1[3].metric("Median", cad(median_val, 0))
 r2 = st.columns(4)
 r2[0].metric("Top Country", top_country if top_country else "-")
 r2[1].metric("Top Channel", top_channel if top_channel else "-")
-r2[2].metric("Top SKU", str(top_sku) if top_sku else "-")
+r2[2].metric("Consignment", f"{cons_rate:.1f}%" if np.isfinite(cons_rate) else "-")
 r2[3].metric("Avg Ship Lag", f"{avg_lag:.1f} days" if np.isfinite(avg_lag) else "-")
 
-tabs = st.tabs(["Overview", "World Map", "Geography × Channels", "Products / SKU", "Time", "Stats", "Data"])
+tabs = st.tabs(["Overview", "World Map", "Geography × Channels", "Time", "Stats", "Data"])
 
 with tabs[0]:
-    st.subheader("Quick overview")
-    st.markdown(
-        "Use the filters on the left to narrow the date range, countries, channels, and cities. "
-        "Everything updates based on your selection. The goal is simple: "
-        "**where revenue comes from (countries/cities), how customers buy (channels), and what they buy (products/SKU).**"
-    )
-
-    st.subheader("What stands out (in plain language)")
+    st.subheader("Insights")
+    share_top = float(country_totals.iloc[0] / country_totals.sum()) if country_totals.sum() else np.nan
     bullets = []
-
-    share_top_ctry = float(country_totals.iloc[0] / country_totals.sum()) if country_totals.sum() else np.nan
-    share_top_ch = float(channel_totals.iloc[0] / channel_totals.sum()) if channel_totals.sum() else np.nan
-
-    if np.isfinite(share_top_ctry):
-        bullets.append(f"- **{top_country}** is the main market and contributes about **{share_top_ctry*100:.1f}%** of the selected total.")
-    if np.isfinite(share_top_ch):
-        bullets.append(f"- **{top_channel}** is the main channel and contributes about **{share_top_ch*100:.1f}%** of the selected total.")
-    if sku_col and np.isfinite(top_sku_share):
-        bullets.append(f"- **Top SKU ({top_sku})** contributes about **{top_sku_share*100:.1f}%** of the selected total.")
+    if np.isfinite(share_top):
+        bullets.append(f"- **{top_country}** is the biggest market and drives about **{share_top*100:.1f}%** of {metric}.")
+    bullets.append(f"- The top channel by {metric} is **{top_channel}**.")
     if np.isfinite(cons_rate):
-        bullets.append(f"- Consignment orders are **{cons_rate:.1f}%** of total orders.")
+        bullets.append(f"- Consignment is **{cons_rate:.1f}%** of orders.")
     if neg_lag_rows > 0:
-        bullets.append(f"- There are **{neg_lag_rows}** rows where shipped date is before sale date (treated as missing in lag charts if the toggle is ON).")
-
-    st.markdown("\n".join(bullets) if bullets else "- No summary available for the current filters.")
+        bullets.append(f"- Shipping data has **{neg_lag_rows}** rows where shipped date is before sale date (treated as missing in lag charts if toggle is ON).")
+    st.markdown("\n".join(bullets) if bullets else "-")
 
     st.subheader("Recommendations")
     recs = []
-    if np.isfinite(share_top_ctry) and share_top_ctry >= 0.5:
+    if np.isfinite(share_top) and share_top >= 0.5:
         recs += [
-            "- Protect the anchor market first (inventory availability + fulfillment reliability in the top country).",
-            "- Use the next 2–3 countries as growth markets and copy what works (best channels in the heatmap).",
+            "- Prioritize stock + fulfillment reliability in the top country first (protect the anchor market).",
+            "- Scale the next 2–3 countries using the channels that already perform well (see heatmap).",
         ]
     else:
-        recs += ["- Use market tiers (anchor / growth / test) and set a specific channel plan per tier."]
-    if sku_col and np.isfinite(top_sku_share) and top_sku_share >= 0.10:
-        recs += ["- Keep top-selling SKUs consistently in stock and featured, since a small set of items is driving a big share."]
+        recs += ["- Use market tiers (anchor / growth / test) and tailor channel strategy per tier."]
     if neg_lag_rows > 0:
         recs += ["- Clean shipping dates (negative lag rows) so operational KPIs are trustworthy."]
     st.markdown("\n".join(recs) if recs else "-")
 
 with tabs[1]:
-    st.subheader("Total Revenue by Country")
-
+    st.subheader(f"World map — {metric} ($ CAD)")
     agg = country_totals.reset_index().rename(columns={metric: "value"})
-    if agg.empty:
-        st.info("No country data for the current filters.")
-    else:
-        agg["share"] = agg["value"] / agg["value"].sum()
+    agg["share"] = agg["value"] / agg["value"].sum()
 
-        fig = px.choropleth(
-            agg,
-            locations="Country",
-            locationmode="country names",
-            color="value",
-            hover_name="Country",
-            custom_data=["share"],
-            projection="natural earth",
-            color_continuous_scale="YlOrRd"
-        )
+    fig = px.choropleth(
+        agg,
+        locations="Country",
+        locationmode="country names",
+        color="value",
+        hover_name="Country",
+        custom_data=["share"],
+        projection="natural earth",
+        title=f"World Map — {metric} ($ CAD)"
+    )
+    fig.update_traces(
+        hovertemplate="<b>%{location}</b><br>Value: %{z:$,.0f} CAD<br>Share: %{customdata[0]:.1%}<extra></extra>"
+    )
+    fig = fig_tight(fig)
+    st.plotly_chart(fig, use_container_width=True)
+    download_html(fig, "01_world_map.html")
 
-        maxv = float(agg["value"].max()) if len(agg) else np.nan
-        tickvals, ticktext = _make_colorbar_ticks(maxv, nticks=4)
+    st.markdown("**Insight:** Revenue is concentrated in a few countries (darker areas on the map).")
+    st.markdown("**Recommendation:** Focus spend and inventory on the top markets first, then expand to the next-tier markets.")
 
-        fig.update_traces(
-            hovertemplate="<b>%{location}</b><br>Revenue: %{z:$,.0f} CAD<br>Share: %{customdata[0]:.1%}<extra></extra>"
-        )
-        fig.update_geos(
-            showframe=False,
-            showcountries=True,
-            countrycolor="rgba(0,0,0,0.30)",
-            showcoastlines=True,
-            coastlinecolor="rgba(0,0,0,0.25)",
-            showland=True,
-            landcolor="white",
-            showocean=True,
-            oceancolor="white",
-            bgcolor="white"
-        )
-        fig.update_layout(
-            title="Total Revenue by Country",
-            paper_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="white"),
-            coloraxis_colorbar=dict(
-                title="Revenue",
-                tickfont=dict(color="white"),
-                titlefont=dict(color="white"),
-                tickvals=tickvals,
-                ticktext=ticktext
-            ),
-            margin=dict(l=10, r=10, t=60, b=10),
-        )
-
-        st.plotly_chart(fig, use_container_width=True)
-        download_html(fig, "01_total_revenue_by_country.html")
-
-        st.markdown("**Insight:** Darker countries are contributing more of the total revenue in the selected filters.")
-        st.markdown("**Recommendation:** Start with the top markets (inventory + marketing + ops), then expand to the next tier once the playbook is stable.")
-
-        st.subheader("Top markets")
-        top_tbl = agg.sort_values("value", ascending=False).head(15).copy()
-        top_tbl = rank_df(top_tbl)
-        st.dataframe(top_tbl.set_index("#")[["Country", "value", "share"]], use_container_width=True)
+    st.subheader("Top markets")
+    top_tbl = agg.sort_values("value", ascending=False).head(15).copy()
+    top_tbl = rank_df(top_tbl)
+    st.dataframe(top_tbl.set_index("#")[["Country", "value", "share"]], use_container_width=True)
 
 with tabs[2]:
     colA, colB = st.columns(2)
@@ -371,7 +281,7 @@ with tabs[2]:
         st.plotly_chart(fig1, use_container_width=True)
         download_html(fig1, "02_top_countries.html")
 
-        st.markdown("**Insight:** A small group of countries usually generates most of the total value.")
+        st.markdown("**Insight:** A small group of countries generates most of the total value.")
         st.markdown("**Recommendation:** Treat smaller countries as experiments; scale only the ones that show repeatable traction.")
 
     with colB:
@@ -408,64 +318,10 @@ with tabs[2]:
     st.plotly_chart(fig4, use_container_width=True)
     download_html(fig4, "05_channel_mix_share.html")
 
-    st.markdown("**Insight:** Countries have different channel profiles (some are more online-heavy, others partner-heavy).")
+    st.markdown("**Insight:** Countries have different channel “profiles” (some are more online-heavy, others partner-heavy).")
     st.markdown("**Recommendation:** Don’t force a single global channel strategy—optimize per market.")
 
 with tabs[3]:
-    st.subheader("Revenue by Product / SKU")
-
-    if not sku_col and not ptype_col:
-        st.info("No 'Item ID' (SKU) or 'Product Type' column found in the dataset.")
-    else:
-        col1, col2 = st.columns(2)
-
-        if ptype_col:
-            with col1:
-                pt = f.groupby(ptype_col)[metric].sum().sort_values(ascending=False).head(12).reset_index().rename(columns={metric: "value"})
-                figp = px.bar(pt, x=ptype_col, y="value", title=f"Top Product Types ({metric})")
-                figp.update_layout(xaxis={"categoryorder": "total descending"})
-                figp.update_traces(hovertemplate="<b>%{x}</b><br>Value: %{y:$,.0f} CAD<extra></extra>")
-                figp = fig_tight(figp)
-                st.plotly_chart(figp, use_container_width=True)
-                download_html(figp, "20_revenue_by_product_type.html")
-
-        if sku_col:
-            with col2:
-                sk = f.groupby(sku_col)[metric].sum().sort_values(ascending=False).head(top_sku_n).reset_index().rename(columns={metric: "value"})
-                sk = sk.sort_values("value", ascending=True)
-                figs = px.bar(sk, x="value", y=sku_col, orientation="h", title=f"Top {top_sku_n} SKUs ({metric})")
-                figs.update_traces(hovertemplate="<b>%{y}</b><br>Value: %{x:$,.0f} CAD<extra></extra>")
-                figs = fig_tight(figs)
-                st.plotly_chart(figs, use_container_width=True)
-                download_html(figs, "21_revenue_by_sku_topN.html")
-
-        if sku_col:
-            st.markdown("### Top SKUs table")
-            sku_tbl = (f.groupby(sku_col).agg(
-                orders=("Sale ID", "count"),
-                value=(metric, "sum"),
-                avg=(metric, "mean"),
-                med=(metric, "median"),
-            ).reset_index())
-            sku_tbl["share"] = sku_tbl["value"] / sku_tbl["value"].sum() if sku_tbl["value"].sum() else np.nan
-            sku_tbl = sku_tbl.sort_values("value", ascending=False).head(top_sku_n).copy()
-            sku_tbl["value"] = sku_tbl["value"].round(0)
-            sku_tbl["avg"] = sku_tbl["avg"].round(0)
-            sku_tbl["med"] = sku_tbl["med"].round(0)
-            sku_tbl["share"] = (sku_tbl["share"] * 100).round(1)
-            sku_tbl = rank_df(sku_tbl).rename(columns={
-                sku_col: "SKU",
-                "value": "Total ($ CAD)",
-                "avg": "Avg ($ CAD)",
-                "med": "Median ($ CAD)",
-                "share": "Share (%)"
-            })
-            st.dataframe(sku_tbl.set_index("#"), use_container_width=True)
-
-        st.markdown("**Insight:** Usually a small set of SKUs/product types generates a large share of revenue.")
-        st.markdown("**Recommendation:** Keep the top SKUs in stock, feature them in your top channels, and review slow SKUs for bundling, discounting, or removal.")
-
-with tabs[4]:
     st.subheader("Time trends")
 
     st.markdown("### Monthly Trend")
@@ -555,7 +411,7 @@ with tabs[4]:
             st.dataframe(cc.set_index("#")[["Country", "City", "orders", "avg_lag", "med_lag", f"Total ({metric})"]], use_container_width=True)
 
             st.markdown("**Insight:** The table shows the biggest delay hotspots when there are enough orders to be reliable.")
-            st.markdown("**Recommendation:** Prioritize fixing hotspots with both high delay and meaningful order volume.")
+            st.markdown("**Recommendation:** Prioritize fixing hotspots with both high delay **and** meaningful order volume.")
 
             top_countries = (lag_df.groupby("Country")[metric].sum().sort_values(ascending=False).head(12).index)
             sub = lag_df[lag_df["Country"].isin(top_countries)].copy()
@@ -583,7 +439,7 @@ with tabs[4]:
             st.markdown("**Insight:** This checks whether higher value orders tend to ship faster or slower (often weak relationship).")
             st.markdown("**Recommendation:** Track shipping lag as an ops KPI; optimize it for customer experience even if revenue impact is small.")
 
-with tabs[5]:
+with tabs[4]:
     st.subheader("Stats")
 
     st.markdown("### 1) Do channels differ on order value?")
@@ -639,7 +495,7 @@ with tabs[5]:
     st.markdown("**Insight:** Bigger |r| means a stronger relationship. Positive means both increase together; negative means one rises while the other falls.")
     st.markdown("**Recommendation:** Use the top 2–3 drivers as dashboard filters or KPIs (don’t overload the dashboard).")
 
-with tabs[6]:
+with tabs[5]:
     st.subheader("Clean tables + download")
 
     colA, colB = st.columns(2)
