@@ -1,3 +1,9 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[ ]:
+
+
 import pathlib
 import numpy as np
 import pandas as pd
@@ -6,6 +12,12 @@ import plotly.express as px
 import plotly.graph_objects as go
 import plotly.io as pio
 from scipy import stats
+
+
+# In[ ]:
+
+
+# Page config & global styles...............................
 
 st.set_page_config(page_title="Week 10 • Geography & Channels", layout="wide")
 
@@ -28,8 +40,10 @@ div[data-testid="column"] { padding-left: 0.40rem; padding-right: 0.40rem; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("Week 10 — Geography & Channels Deep Dive")
+st.title("Geography & Channel")
 st.caption("World map • Geography × Channels • Time trends + shipping lag • Stats • $ CAD")
+
+# Paths & schema
 
 BASE = pathlib.Path(__file__).parent
 DATA_FILE = BASE / "Combined_Sales_2025 (2).csv"
@@ -38,6 +52,12 @@ ESSENTIAL = [
     "Sale ID", "Date", "Country", "City", "Channel",
     "Price (CAD)", "Discount (CAD)", "Shipping (CAD)", "Taxes Collected (CAD)", "Shipped Date"
 ]
+
+
+# In[ ]:
+
+
+# Helpers....................................................................
 
 @st.cache_data(show_spinner=False)
 def load_csv(p: pathlib.Path) -> pd.DataFrame:
@@ -110,6 +130,8 @@ def fig_tight(fig):
     fig.update_layout(margin=dict(l=10, r=10, t=60, b=10))
     return fig
 
+# Load & validate data
+
 if not DATA_FILE.exists():
     st.error("Dataset file not found. Put 'Combined_Sales_2025 (2).csv' in the SAME folder as app.py in your repo.")
     st.stop()
@@ -119,6 +141,13 @@ missing = [c for c in ESSENTIAL if c not in df.columns]
 if missing:
     st.error("Missing required columns: " + ", ".join(missing))
     st.stop()
+
+
+
+# In[ ]:
+
+
+# Cleaning & feature engineering.............................................
 
 text_cols = ["Country", "City", "Channel", "Customer Type", "Product Type", "Lead Source", "Consignment? (Y/N)"]
 for c in text_cols:
@@ -142,6 +171,13 @@ df["Ship Lag Raw (days)"] = (df["Shipped Date"] - df["Date"]).dt.days
 df["Ship Lag Clean (days)"] = np.where(df["Ship Lag Raw (days)"] >= 0, df["Ship Lag Raw (days)"], np.nan)
 df["Month"] = df["Date"].dt.to_period("M").dt.to_timestamp()
 
+
+# In[ ]:
+
+
+# Sidebar filters.......................................................................
+
+
 st.sidebar.header("Filters")
 min_d = df["Date"].min()
 max_d = df["Date"].max()
@@ -164,6 +200,8 @@ channels = sorted([c for c in df["Channel"].dropna().unique().tolist() if c])
 sel_countries = st.sidebar.multiselect("Countries", countries, default=[])
 sel_channels = st.sidebar.multiselect("Channels", channels, default=[])
 
+# Filtered dataset
+
 base = df[(df["Date"] >= start) & (df["Date"] <= end)].copy()
 if sel_countries:
     base = base[base["Country"].isin(sel_countries)]
@@ -180,6 +218,12 @@ if sel_cities:
 if f.empty:
     st.warning("No rows match the current filters.")
     st.stop()
+
+
+# In[ ]:
+
+
+# Metrics....................................................................
 
 lag_col = "Ship Lag Clean (days)" if exclude_negative_lag else "Ship Lag Raw (days)"
 
@@ -198,6 +242,8 @@ cons_rate = float((f["Consignment? (Y/N)"].astype(str).str.upper().eq("Y").mean(
 neg_lag_rows = int((f["Ship Lag Raw (days)"] < 0).sum())
 avg_lag = float(np.nanmean(f[lag_col].values)) if f[lag_col].notna().any() else np.nan
 
+# KPI cards
+
 r1 = st.columns(4)
 r1[0].metric("Orders", f"{orders:,}")
 r1[1].metric("Total", cad(total, 0))
@@ -210,8 +256,13 @@ r2[1].metric("Top Channel", top_channel if top_channel else "-")
 r2[2].metric("Consignment", f"{cons_rate:.1f}%" if np.isfinite(cons_rate) else "-")
 r2[3].metric("Avg Ship Lag", f"{avg_lag:.1f} days" if np.isfinite(avg_lag) else "-")
 
-tabs = st.tabs(["Overview", "World Map", "Geography × Channels", "Time", "Stats", "Data"])
 
+# In[ ]:
+
+
+# Tabs...........................................................................................
+
+tabs = st.tabs(["Overview", "World Map", "Geography × Channels", "Time", "Stats", "Data"])
 with tabs[0]:
     st.subheader("Insights")
     share_top = float(country_totals.iloc[0] / country_totals.sum()) if country_totals.sum() else np.nan
@@ -239,7 +290,7 @@ with tabs[0]:
     st.markdown("\n".join(recs) if recs else "-")
 
 with tabs[1]:
-    st.subheader(f"World map — {metric} ($ CAD)")
+    st.subheader(f"World map - {metric} ($ CAD)")
     agg = country_totals.reset_index().rename(columns={metric: "value"})
     agg["share"] = agg["value"] / agg["value"].sum()
 
@@ -251,7 +302,7 @@ with tabs[1]:
         hover_name="Country",
         custom_data=["share"],
         projection="natural earth",
-        title=f"World Map — {metric} ($ CAD)"
+
     )
     fig.update_traces(
         hovertemplate="<b>%{location}</b><br>Value: %{z:$,.0f} CAD<br>Share: %{customdata[0]:.1%}<extra></extra>"
